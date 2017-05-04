@@ -9,7 +9,8 @@ import numpy as np
 import pytest
 
 from cntk.io import MinibatchSource, CTFDeserializer, StreamDefs, StreamDef, \
-    ImageDeserializer, FULL_DATA_SWEEP, INFINITELY_REPEAT, \
+    ImageDeserializer, Base64ImageDeserializer, \
+    FULL_DATA_SWEEP, INFINITELY_REPEAT, \
     DEFAULT_RANDOMIZATION_WINDOW_IN_CHUNKS, \
     sequence_to_cntk_text_format, UserMinibatchSource, StreamInformation, \
     MinibatchData
@@ -570,6 +571,48 @@ filename2	0
     mb_source = MinibatchSource([image1, image2])
     assert isinstance(mb_source, MinibatchSource)
 
+
+def test_base64_image_deserializer(tmpdir):
+    import io, base64, uuid; from PIL import Image
+    images, b64_images = [], []
+    for i in range(10):
+        data = np.random.randint(0, 255**3 + 1, (5,7))
+        image = Image.fromarray(data, "RGB")
+        buf = io.BytesIO()
+        image.save(buf, format='PNG')
+        assert image.width == 7 and image.height == 5
+        b64_images.append(base64.b64encode(buf.getvalue()))
+        images.append(np.array(image))
+
+    image_data = str(tmpdir / 'mbdata.txt')
+    with open(image_data, 'wb') as f:
+        for i,data in enumerate(b64_images):
+            seq_id = uuid.uuid1().int >> 64
+            seq_id = str(seq_id).encode('ascii')
+            line = seq_id + b'\t'
+            label = str(i).encode('ascii')
+            line += label + b'\t' + data + b'\n'
+            f.write(line)
+
+    transforms = [xforms.scale(width=7, height=5, channels=3)]
+
+    deserializer = Base64ImageDeserializer(image_data, 
+        StreamDefs(
+            f=StreamDef(field='image', transforms=transforms),
+            l=StreamDef(field='label', shape=10)))
+    
+    mb_source = MinibatchSource(deserializer, randomize=False)
+    assert isinstance(mb_source, MinibatchSource)
+
+    mb = mb_source.next_minibatch(10)
+    features = mb_source.stream_infos()[0]
+    results = mb[features].asarray()
+
+    for i in range(10):
+        # original images are RBG, openCV produces BGR images,
+        # reverse the last dimension of the original images
+        bgrImage = images[i][:,:,::-1]
+        assert (bgrImage == results[i][0]).all()
 
 class MyDataSource(UserMinibatchSource):
     def __init__(self, f_dim, l_dim):
